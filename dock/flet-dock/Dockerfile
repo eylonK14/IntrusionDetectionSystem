@@ -9,6 +9,11 @@ RUN apt-get update && apt-get install -y gcc-11 g++-11 python3
 
 RUN apt-get upgrade -y
 
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y zenity
+
 RUN curl https://bootstrap.pypa.io/get-pip.py | python3
 
 COPY requirements.txt ./
@@ -16,4 +21,5 @@ RUN python3 -m pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python3", "ids-gui.py"]
+# CMD ["python3", "/volumes/ids-gui.py"]
+CMD ["flet", "run", "/volumes/ids-gui.py"]
