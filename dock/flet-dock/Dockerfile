@@ -21,5 +21,4 @@ RUN python3 -m pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# CMD ["python3", "/volumes/ids-gui.py"]
-CMD ["flet", "run", "/volumes/ids-gui.py"]
+CMD ["flet", "run", "-r", "/volumes/ids-gui.py"]

@@ -2,68 +2,18 @@
 
 import ast
 import pprint
+import threading
 import flet as ft
+import rulebook as rb
 import scapy.all as scapy
-from collections import defaultdict
+import packet_handler as ph
 
-# def proto_name_by_num(proto_num):
-#     for name, num in vars(socket).items():
-#         if name.startswith("IPPROTO") and proto_num == num:
-#             return name[8:]
-#     return "Protocol not found"
+c = 0
+sem = threading.Semaphore()
 
 
-# Flow tracker
-class Flow:
-    def __init__(self, src_ip, dst_ip, src_port, dst_port, proto):
-        self.src_ip = src_ip
-        self.dst_ip = dst_ip
-        self.src_port = src_port
-        self.dst_port = dst_port
-        self.proto = proto
-        self.outgoing = None
-        self.packets_sent = 0
-        self.size_of_sent_data = 0
-
-    def __str__(self):
-        return f"""
-Flow {self.src_ip}:{self.src_port} -> {self.dst_ip}:{self.dst_port}
-Protocol: {self.proto}
-Flow direction: {'outgoing' if self.outgoing else 'ingoing'}
-Packets Sent: {self.packets_sent}
-Sent Data (bytes): {self.size_of_sent_data}
-"""
-
-
-# Dictionary to store flows
-flows = defaultdict(Flow)
-
-
-# Function to get the size of the payload in bytes
-def get_payload_size(packet):
-    # Check if there's a raw payload (TCP/UDP/other data)
-    if packet.haslayer(scapy.Raw):
-        return len(packet[scapy.Raw].load)
-    return 0
-
-
-# Function to create flow key based on 5-tuple
-def create_flow_key(packet):
-    # Extract necessary information for the 5-tuple
-    src_ip = packet[scapy.IP].src
-    dst_ip = packet[scapy.IP].dst
-    # proto_num = packet[scapy.IP].proto
-    # proto = proto_name_by_num(proto_num)
-    proto = packet.payload.layers()[1].__name__
-    src_port = 0
-    dst_port = 0
-
-    # For protocols like TCP and UDP, ports are important
-    if packet.haslayer(scapy.TCP) or packet.haslayer(scapy.UDP):
-        src_port = packet.sport
-        dst_port = packet.dport
-
-    return (src_ip, dst_ip, src_port, dst_port, proto)
+def get_route_list(route):
+    return [item for item in route.split("/") if item != ""]
 
 
 def main(page: ft.Page) -> None:
@@ -151,11 +101,11 @@ def main(page: ft.Page) -> None:
         sniff_toggle.disabled = False
         page.update()
 
-    def append_according_to_filters():
-        print(f'{current_filters=}')
+    def append_according_to_filters(key=None):
+        # print(f'{current_filters=}')
         flows_set = set()
-        for key, flow in flows.items():
-            print(f'{key=}')
+        for key, flow in rb.flows.items():
+            # print(f'{key=}')
             flag = True
             for i in range(5):
                 if current_filters[i] is not None and current_filters[i] != key[i]:
@@ -167,29 +117,39 @@ def main(page: ft.Page) -> None:
         flow_list.options = [ft.dropdown.Option(key) for key in flows_set]
         page.update()
 
-    def packet_handler(packet):
-        print(f'{type(packet)=}')
+    def handle_packet(packet, from_pcap=False):
         if not packet.haslayer(scapy.IP):
             return
 
         # Create a unique flow key based on the 5-tuple
-        key = create_flow_key(packet)
+        key = ph.create_flow_key(packet)
         # Get the payload size for this packet
-        payload_size = get_payload_size(packet)
+        payload_size = ph.get_payload_size(packet)
 
         # Check if this flow already exists
-        if key not in flows:
-            flows[key] = Flow(*key)
-            if not iface_chooser.disabled:
-                if scapy.get_if_addr(iface_chooser.value) == flows[key].src_ip:
-                    flows[key].outgoing = True
+        if key not in rb.flows:
+            rb.flows[key] = ph.Flow(*key)
+            rb.flows[key].outgoing = False
+            routes = set()
+            for line in scapy.read_routes():
+                routes.add(line[4])
+            if rb.flows[key].src_ip in routes:
+                rb.flows[key].outgoing = True
             populate_filters(key)
             append_according_to_filters()
             # flow_list.options.append(ft.dropdown.Option(key))
 
-        flows[key].packets_sent += 1
-        flows[key].size_of_sent_data += payload_size
+        rb.flows[key].packets_sent += 1
+        rb.flows[key].size_of_sent_data += payload_size
 
+        rb.add_to_dns_cached_ips(packet, key)
+
+        sus_flag, sus_str = rb.check_suspicious(packet, key, from_pcap)
+        if sus_flag:
+            # lv.controls.append(ft.Text(f'suspicious: {key}', color='red'))
+            page.controls.append(
+                ft.Text(f'suspicious: {key}\n{sus_str}\n', color='red')
+            )
         # Output flow information in real-time
         # os.system("clear")  # Clear the console for better readability
         # print(f"Updated Flow Information:\n{flows[flow_key]}")
@@ -197,16 +157,17 @@ def main(page: ft.Page) -> None:
         # print(dict(flows))
         # Prints the nicely formatted dictionary
         # pprint.pprint(dict(flows))
+        # print(f'{packet.layers()=}')
 
-        packet_info.value = f'{flows[key]}'
+        packet_info.value = f'{rb.flows[key]}'
         page.update()
 
     def populate_filters(key):
-        src_ip_set.add(flows[key].src_ip)
-        dst_ip_set.add(flows[key].dst_ip)
-        src_port_set.add(flows[key].src_port)
-        dst_port_set.add(flows[key].dst_port)
-        protocol_set.add(flows[key].proto)
+        src_ip_set.add(rb.flows[key].src_ip)
+        dst_ip_set.add(rb.flows[key].dst_ip)
+        src_port_set.add(rb.flows[key].src_port)
+        dst_port_set.add(rb.flows[key].dst_port)
+        protocol_set.add(rb.flows[key].proto)
         src_ip_filter.options = [ft.dropdown.Option(i) for i in src_ip_set]
         dst_ip_filter.options = [ft.dropdown.Option(i) for i in dst_ip_set]
         src_port_filter.options = [ft.dropdown.Option(i) for i in src_port_set]
@@ -217,7 +178,7 @@ def main(page: ft.Page) -> None:
         iface_chooser.disabled = True
         path = e.files[0].path
         for packet in scapy.PcapReader(path):
-            packet_handler(packet)
+            handle_packet(packet, True)
 
     def toggle_sniff(e: ft.ControlEvent):
         if sniff_toggle.value:
@@ -243,7 +204,7 @@ def main(page: ft.Page) -> None:
         page.close(confirm_dialog)
 
     def flow_selected(e: ft.ControlEvent):
-        flow_info.value = f'{flows[ast.literal_eval(flow_list.value)]}'
+        flow_info.value = f'{rb.flows[ast.literal_eval(flow_list.value)]}'
         page.update()
 
     page.title = 'ids gui'
@@ -251,6 +212,7 @@ def main(page: ft.Page) -> None:
     page.window.prevent_close = True
     page.window.on_event = handle_window_event
     page.on_keyboard_event = on_keyboard
+    page.scroll = ft.ScrollMode.ALWAYS
     page.theme_mode = ft.ThemeMode.DARK
 
     theme_toggle = ft.Switch(label="Dark theme", on_change=theme_changed)
@@ -404,13 +366,13 @@ def main(page: ft.Page) -> None:
                 direction_filter,
                 flow_list,
                 packet_info,
-                flow_info
+                flow_info,
             ],
-            alignment=ft.MainAxisAlignment.CENTER
+            alignment=ft.MainAxisAlignment.CENTER,
         )
     )
-
-    sniffer = scapy.AsyncSniffer(prn=packet_handler, iface=iface_chooser.value)
+    scapy.load_layer('http')
+    sniffer = scapy.AsyncSniffer(prn=handle_packet, iface=iface_chooser.value)
 
 
 if __name__ == "__main__":
