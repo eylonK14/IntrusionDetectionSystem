@@ -129,7 +129,7 @@ def main(page: ft.Page) -> None:
         # Check if this flow already exists
         if key not in rb.flows:
             rb.flows[key] = ph.Flow(*key)
-            rb.flows[key].outgoing = False
+            rb.flows[key].outgoing = from_pcap
             routes = set()
             for line in scapy.read_routes():
                 routes.add(line[4])
@@ -146,7 +146,6 @@ def main(page: ft.Page) -> None:
 
         sus_flag, sus_str = rb.check_suspicious(packet, key, from_pcap)
         if sus_flag:
-            # lv.controls.append(ft.Text(f'suspicious: {key}', color='red'))
             page.controls.append(
                 ft.Text(f'suspicious: {key}\n{sus_str}\n', color='red')
             )

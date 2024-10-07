@@ -128,62 +128,124 @@ bigger_dict = {
 }
 
 local_protocols = {
-    137: 'NBNS',
-    5355: 'LLMNR'
+    'NBNS',
+    'ARP',
+    'LLMNR'
 }
 
 ip_blacklist = {
-    '8.8.8.8',
-    '8.8.4.4',
-    '1.1.1.1',
-    '1.0.0.1'
+    '0.0.0.0',
+    '127.0.0.1',
+    '255.255.255.255',
+    '10.0.0.0',
+    '172.16.0.0',
+    '192.168.0.0',
+    '15.197.240.20',
+    '18.98.161.73',
+    '104.248.81.48'
 }
 
 port_blacklist = {
+    1337,
     1234,
-    2345
+    2345,
+    3456,
+    4567,
+    5678,
+    6789,
+    7890,
+    8901,
+    9012,
+    6969,
 }
 
 dns_domains = defaultdict(int)
 dns_subdomains = defaultdict(set)
+icmp_requests = defaultdict(int)
+
+
+def check_icmp_tunneling(packet):
+    if not packet.haslayer(scapy.ICMP):
+        return False
+    icmp_requests[packet[scapy.IP].dst] += 1
+    if ph.get_payload_size(packet) > 64:
+        return True
+    if icmp_requests[packet[scapy.IP].dst] > 20:
+        return True
+    return False
+
+
+def check_for_blacklisted_port(packet):
+    dst_port = 0
+    if packet.haslayer(scapy.TCP) or packet.haslayer(scapy.UDP):
+        dst_port = packet.dport
+    return dst_port in port_blacklist
+
+
+def check_for_blacklisted_proto(proto):
+    print('here!!!')
+    for x in local_protocols:
+        if x in proto or proto in x:
+            return True
+    return False
+
+
+def check_for_blacklisted_ip(packet):
+    return packet[scapy.IP].dst in ip_blacklist
 
 
 def add_to_dns_cached_ips(packet, key):
     if key[-1] != 'DNS':
         return
+    full_domain = packet[scapy.DNSQR].qname
+    save_domain_stats(full_domain)
+    print(f'{full_domain=}')
     for x in range(packet[scapy.DNS].ancount):
         dns_resp_ip_addr = packet[scapy.DNSRR][x].rdata
         domain_name = packet[scapy.DNSRR][x].rrname
         # print(f'DNS Response: {domain_name} -> {dns_resp_ip_addr}')
-        domain_name = domain_name.decode('utf-8').rstrip('.')
-        tld = '.'.join(domain_name.split('.')[-2:])
-        print(f'{tld=}')
-        subdomain = '.'.join(domain_name.split('.')[:-2])
-        print(f'{subdomain=}')
-        pprint.pprint(f'{dict(dns_domains)=}')
-        dns_domains[tld] += 1
-        dns_subdomains[tld].add(subdomain)
+        save_domain_stats(domain_name)
         if not isinstance(dns_resp_ip_addr, str):
             continue
         dns_cached_ips.add(dns_resp_ip_addr)
 
 
+def save_domain_stats(domain_name):
+    domain_name = domain_name.decode('utf-8').rstrip('.')
+    tld = '.'.join(domain_name.split('.')[-2:])
+    print(f'{tld=}')
+    subdomain = '.'.join(domain_name.split('.')[:-2])
+    print(f'{subdomain=}')
+    pprint.pprint(f'{dict(dns_domains)=}')
+    dns_domains[tld] += 1
+    dns_subdomains[tld].add(subdomain)
+
+
 def check_dns_tunneling(packet):
+    flag = False
+    full_domain = packet[scapy.DNSQR].qname
+    flag = check_sus_domain(full_domain)
     for x in range(packet[scapy.DNS].ancount):
         domain_name = packet[scapy.DNSRR][x].rrname
         # print(f'DNS Response: {domain_name} -> {dns_resp_ip_addr}')
-        domain_name = domain_name.decode('utf-8').rstrip('.')
-        tld = '.'.join(domain_name.split('.')[-2:])
-        print(f'{tld=}')
-        if dns_domains[tld] > 15:
-            for subdomain in dns_subdomains[tld]:
-                if len(subdomain) > 30:
-                    return True
-    return False
+        flag = check_sus_domain(domain_name)
+    return flag
+
+
+def check_sus_domain(domain_name):
+    flag = False
+    domain_name = domain_name.decode('utf-8').rstrip('.')
+    tld = '.'.join(domain_name.split('.')[-2:])
+    print(f'{tld=}')
+    if dns_domains[tld] > 15:
+        for subdomain in dns_subdomains[tld]:
+            if len(subdomain) > 30:
+                flag = True
+    return flag
 
 
 def check_invalid_packet_size(packet):
-    return not (50 < len(packet) < 6000)
+    return len(packet) > 6000
 
 
 def check_invalid_http_request(packet):
@@ -214,7 +276,6 @@ def check_suspicious(packet, key, from_pcap=False) -> bool:
     if not from_pcap:
         if key[0] not in routes:
             return sus_flag, sus_str
-
     if check_invalid_packet_size(packet):
         sus_flag = True
         sus_str += f'Invalid packet size: {len(packet)}\n'
@@ -227,6 +288,18 @@ def check_suspicious(packet, key, from_pcap=False) -> bool:
     if proto == 'DNS' and check_dns_tunneling(packet):
         sus_flag = True
         sus_str += 'DNS tunneling detected\n'
+    if check_for_blacklisted_proto(proto):
+        sus_flag = True
+        sus_str += f'Blacklisted protocol: {proto}\n'
+    if check_for_blacklisted_ip(packet):
+        sus_flag = True
+        sus_str += f'Blacklisted IP: {packet[scapy.IP].src}\n'
+    if check_for_blacklisted_port(packet):
+        sus_flag = True
+        sus_str += f'Blacklisted port: {packet.dport}\n'
+    if check_icmp_tunneling(packet):
+        sus_flag = True
+        sus_str += 'ICMP tunneling detected\n'
     return sus_flag, sus_str
 
 
